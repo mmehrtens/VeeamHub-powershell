@@ -45,6 +45,7 @@
 # 2022.11.25 enhanced explicit VM exclusions to be based on combination of VM name and VM-ID (vSphere MoRefID)
 # 2023-08-07 added support for VBR v12 job type "PerVMParentBackup" (new backup chain format of v12)
 # 2023.11.10 fixed a bug which lead to restore points being ignored when a job was changed to target a different repository
+# 2024.01.22 replaced usage of obsolete method 'GetTargetVmInfo()' with property 'AuxData' to determine vSphere VM-IDs (this might NOT work with VBR versions prior to 12.1)
 # -----------------------------------------------
 
 # vbrServer passed as parameter (script will ask for credentials if there is no credentials file!)
@@ -406,7 +407,7 @@ Process {
                 Write-Progress -Activity "Getting restore points" -PercentComplete ($countRPs / $objRPs.Count * 100) -Id 3 -ParentId 2
 
                 $myName = $restorePoint.VmName
-                $moRefID = $restorePoint.GetTargetVmInfo().VmRef
+                $moRefID = $restorePoint.AuxData.VmRef
 
                 # ignore restore point if VM name or VM name + ID is listed in an exclusion file
                 $processThisVM = $true
