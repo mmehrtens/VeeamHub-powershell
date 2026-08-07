@@ -13,3 +13,74 @@ February 27 2024 Update:
 
 February 9 2026 Update:
 - Added user prompt for whether or not to include Security events in the log collection (defaults to no).
+
+June 10 2026 Update:
+- Added collection of FLTMC.exe output (registered Filter Manager minifilter drivers) to FLTMC.txt.
+- Added -IncludeSecurityEvents and -Force parameters so the script can run unattended/remotely (via Invoke-Command). GUI prompts are now only shown in interactive sessions; non-interactive sessions are driven entirely by parameters.
+- Replaced Win32_Product query for installed software with registry uninstall key enumeration. Querying Win32_Product forces Windows Installer consistency checks on every installed MSI package which can trigger spontaneous repairs, high CPU usage, and floods the Application event log being collected.
+- Replaced Get-WmiObject with Get-CimInstance throughout (WMI cmdlets are removed in PowerShell 7).
+- Added fallbacks for cmdlets not available before Windows Server 2012 / Windows 8: Win32_Volume (CIM) for Get-Volume, 'netsh advfirewall' for Get-NetFirewallProfile, and an explanatory note when Get-NetAdapterBinding is unavailable.
+- Each collection step is now individually error-handled and failures are recorded to CollectionErrors.log inside the archive, replacing the global suppression of all errors.
+- Replaced legacy Shell.Application COM zip fallback (~140 lines) with .NET ZipFile compression, which is available on all supported PowerShell versions and has no file size limitations. This also fixes exported event logs not being included in the archive on PowerShell 4.0.
+- Fixed Write-Console being called before it was defined in the PowerShell ISE check.
+- Fixed only the last named SQL instance being collected when multiple named instances are running.
+- Fixed invalid registry value name detection flagging any name containing a space instead of only leading/trailing whitespace.
+- SQL permissions report is now buffered and written once instead of re-opening the log file for every line.
+- Event log CSV export now streams directly to disk to reduce memory usage.
+- The collected log folder is only deleted after verifying the zip archive was created successfully.
+- Removed cosmetic Start-Sleep delays (saves ~30 seconds per run).
+- Miscellaneous cleanup: temp path derived from SystemDrive, $env:COMPUTERNAME instead of hostname.exe, directories created before transcription starts.
+- Introduced script versioning (2.0). The version is printed at startup and recorded in the Execution.log transcript inside the archive so support can identify which script revision produced a bundle.
+- Added -OutputDirectory parameter to redirect the collected bundle to an alternate location (e.g. when the default volume is low on disk space).
+- Added hypervisor detection and guest tools collection (hypervisor_info.log): VMware Tools version and service status, Hyper-V Integration Services version and vmic* service status, or Nutanix Guest Tools version.
+- Added collection of installed Windows updates/hotfixes (installed_hotfixes.log).
+- Tabular outputs (installed software, services, volume info, local accounts, 'File and Printer Sharing' status) are now exported as CSV instead of fixed-width text so they can be sorted and filtered in a spreadsheet. Additional columns were added now that width is no longer a constraint (e.g. service short name, start mode and binary path; software install location).
+- Added collection of a point-in-time netstat snapshot (netstat.log). The file carries an embedded disclaimer header explaining that many Veeam ports (for example, the 2500-3300 data transport range) are bound only during active jobs/operations and that their absence is expected; the snapshot is deliberately excluded from the triage summary to avoid misinterpretation.
+- Security hardening: the working directory is now a uniquely-named per-run folder under %windir%\Temp instead of the shared, predictable C:\temp. This prevents pre-planted file/junction attacks against the elevated script, avoids clobbering pre-existing files (e.g. C:\temp\Execution.log), and allows concurrent runs. The working directory is fully removed at the end of the run.
+- Security hardening: the output folder and the resulting .zip archive now have their ACLs restricted to Administrators, SYSTEM, and the invoking user (identified by SID so this works on non-English systems). Previously, bundles created under the default %ProgramData%-based location inherited ACLs readable by all local users despite containing sensitive data (accounts, SQL permissions, event logs).
+- Security hardening: the spawned child PowerShell process (VSS writers timeout handling) now runs with -NoProfile; file cmdlets operating on user-influenced paths use -LiteralPath so wildcard characters in a custom -OutputDirectory are never glob-expanded.
+- Added a closing notice that the archive contains sensitive data and that old collections are not removed automatically.
+- The script now exits with code 1 when the archive was not created or any collection step failed, so unattended callers (e.g. Invoke-Command) can detect problems programmatically. Early-exit failure paths (unsupported host, invalid output directory) also exit with code 1 instead of 0.
+- Output paths containing wildcard characters ('[', ']', '*', '?') are rejected at startup with a clear error. Several cmdlets used by the script treat these characters in -Path arguments as wildcard patterns with version-dependent quirks; declining to run is safer than risking a file operation resolving to an unintended location.
+- Fixed named-instance SQL detection matching auxiliary services (MSSQLFDLauncher$X, MSSQLLaunchpad$X, MSSQLServerADHelper) as if they were SQL instances, which produced spurious entries in CollectionErrors.log on healthy systems.
+- The SQL Windows-group member check now reports when the ActiveDirectory PowerShell module is missing instead of misleadingly reporting the group as not found in the domain.
+- Start-Transcript is now guarded so an already-running transcript in the calling host cannot abort the run.
+- Added a triage summary file (!_SUMMARY.txt) at the root of the archive. It surfaces facts extracted from the collected data: VSS writers not in a stable state, non-default VSS providers, key service states (VSS, COM+ Event System, CryptSvc, WMI, SQLWriter when SQL is present, Veeam services), volumes below free space thresholds, minifilter drivers not shipped in-box with Windows, pending reboot indicators, SCHANNEL protocol customizations, and any failed collection steps. The summary is advisory (facts, not verdicts); checks that cannot be parsed (e.g. localized vssadmin output on non-English OSes) are flagged for manual review rather than reporting an all-clear. VSS provider identification uses locale-independent provider IDs so third-party providers are still detected on non-English systems.
+- Summary filter driver check no longer relies solely on a static list of in-box Microsoft minifilters. Filters not on the list have their driver binary's publisher metadata checked before being flagged for review, so in-box filters introduced by Windows updates (e.g. UCPD) are not misreported as third-party. Entries that could not be confidently confirmed as Microsoft were removed from the static list since the publisher fallback now covers them.
+
+August 3 2026 Update (version 3.0):
+
+Veeam Backup & Replication v13 compatibility:
+- Verified against VBR 13.1 (and regression-tested against VBR 12.3): wherever v12 and v13 differ, the script probes for what actually exists on the machine instead of branching on a detected version, so it behaves sensibly on versions it has never seen.
+- Veeam log directory override (LogDirectory) is now probed in both the 64-bit registry key (v12 and older) and the WOW6432Node key; v13 removed the 64-bit 'Veeam Backup and Replication' key entirely.
+- Added -VeeamLogRotations parameter (default: 3). v13 rotates logs aggressively (Name.1.log, Name.log.gz, dated YYYY-MM-DD_Name.zip archives, per-start timestamped logs) and log directories can accumulate hundreds of archived rotations; the script now groups rotated files into "families" and collects only the N newest of each. Pass 0 to collect everything (v2.0 behavior).
+- Running on a VBR server now collects a rotation-filtered set of the server logs instead of skipping the log copy entirely (the rotation filter is what makes this practical); the marker file flagging VBR-server runs remains.
+- Added a Veeam component inventory (veeam_component_versions.log) built from each Veeam service binary's file version -- the only version source that works identically on v12 and v13 -- with headline versions repeated in the triage summary.
+- When VBR v13+ is detected, a note file (v13_registry_note.log) explains that most advanced options now live in the configuration database, so a thin registry export is expected and is not a collection failure.
+- Hypervisor detection now recognizes KVM-based platforms (Proxmox VE -- supported since VBR v13 -- RHV/oVirt, plain KVM) including QEMU guest agent version and service status.
+
+PowerShell 7 support (script now runs identically under Windows PowerShell 4.0-5.1 and PowerShell 7.x):
+- SQL Server Management Objects (SMO) loading is edition-aware: the GAC path is used on Windows PowerShell, the SqlServer module on PowerShell 7, and a functional probe verifies the assembly actually works before use (on PowerShell 7 the .NET Framework SMO can appear to load but fails at first use). When neither source is available the report explains how to include the SQL data.
+- Clear-Host is guarded (PowerShell 7 throws when no real console handle exists), Get-WindowsFeature falls back to DISM when the ServerManager module is unreachable, and GUI prompts degrade safely when WinForms is unavailable.
+- Passing -IncludeSecurityEvents explicitly (either state, including :$false) now suppresses the interactive Security-events prompt so interactive runs can be fully scripted.
+- The Parameters line in the triage summary now renders parameter values, so -IncludeSecurityEvents:$false is no longer indistinguishable from -IncludeSecurityEvents.
+
+Expanded collection:
+- Added collection of the hosts file (hosts.txt) and, when present, lmhosts (lmhosts.txt). Active (uncommented) hosts entries are surfaced in the triage summary -- stale hosts-file overrides are a recurring root cause in "DNS is fine" support cases.
+
+Production-safety hardening (from a full review of the script):
+- A failed compression can no longer destroy the collected data: partial archives are deleted on compression failure, and the uncompressed data folder is only removed after the final archive opens and validates as a readable zip. Previously a partial zip left by a mid-compression failure (e.g. disk full) would pass the existence check and the collected data would be deleted.
+- Preflight free-space check: before anything is written, the script estimates the collection size (rotation-filtered Veeam logs plus event log sizes plus staging/archive overhead) and refuses to start when the target volume(s) lack headroom, since filling a volume on a production server is itself an outage risk. -SkipFreeSpaceCheck overrides the estimate.
+- Event logs are now staged inside the (ACL-restricted) output folder instead of %windir%\Temp, so -OutputDirectory genuinely redirects the disk load off the system volume, and a partial export ships in the archive instead of being stranded.
+- Local account collection now filters Win32_UserAccount with LocalAccount = TRUE. Unfiltered, this class enumerates domain accounts on domain-joined machines: slow on large domains, needless domain controller load, the entire domain user list would land in the bundle, and the enumeration pattern is a known trigger for EDR "account discovery" detections.
+- Failure to restrict permissions on the output folder is now fatal (previously the script would continue and write sensitive data with inherited, potentially world-readable ACLs). The archive is built in the admin-only working directory and copied into a pre-created, pre-ACL'd destination file, so the bundle is never readable by non-administrators at any point, even mid-compression.
+- SQL Windows-group membership enumeration now has guard rails: effectively-all-of-domain principals (Domain Users, Domain Computers, Everyone, Authenticated Users -- matched by SID so the check is locale-safe) are never expanded, and groups with more than 500 direct members are reported by count instead of enumerated.
+- SQL permission collection now visits only the databases each login is actually mapped to and only that login's own database user. Previously every mapped login triggered a walk of every user in every database -- extremely slow on large instances, and the identical all-users dump was printed under every login, making the per-login report misleading.
+- Native command failures (vssadmin, reg export, fltmc, systeminfo, wevtutil, netsh, ipconfig, netstat, dism) are now detected via exit codes and recorded to CollectionErrors.log; previously a failed native command still showed its step as successful. Event log export failures are tallied per log and reported in one summary error after the successfully exported logs are archived.
+- The Veeam log directory walk no longer follows directory junctions/symlinks. Windows PowerShell 5.1 follows them during recursion (risking loops and collecting data from outside the log directory) while PowerShell 7 does not; the explicit walk makes the two engines select identical files.
+- The 'vssadmin list writers' hang timeout now terminates vssadmin.exe itself (started directly with redirected output) instead of an intermediary PowerShell process that left vssadmin running and holding VSS busy.
+- Files that could not be copied are now listed by name and reason in CollectionErrors.log (first 10, plus a count) instead of only a count.
+- Interactive prompts now open above other windows (previously they could open behind the console and make the script look hung) and the Security-events prompt defaults its focused button to No so a blind Enter gives the conservative answer.
+
+Maintainer tooling:
+- Added Test-CollectGuestLogs.ps1 (not needed by end users): validates that the script parses on the current PowerShell engine, unit-tests the rotation-family grouping against every known Veeam log naming scheme, and can dry-run the rotation filter against a live Veeam log directory (read-only). Run it under both Windows PowerShell 5.1 and PowerShell 7 after changing Get-LogFamilyKey.
